@@ -46,11 +46,10 @@ typedef struct {
     int current_time;       // 系统当前时间
 } Mall;
 
-// ========================== 新增的全局变量 ========================== //
-// 用于计算所有顾客总的周转时间以及完成乘梯的顾客数量
-int total_turnaround_time = 0;
-int completed_customers = 0;
-// ================================================================== //
+// ============ 用于平均周转时间统计的全局变量 ============ //
+int total_turnaround_time = 0;   // 所有已完成顾客的总周转时间
+int completed_customers = 0;     // 已完成乘梯的顾客数量
+// ====================================================== //
 
 Mall* mall = NULL;
 
@@ -287,10 +286,9 @@ void operate_escalator() {
                 int turnaround_time = mall->current_time - c->arrival_time;
                 printf("顾客 %d 完成乘梯(上行)，周转时间: %d 秒\n", c->id, turnaround_time);
 
-                // ========================== 新增：统计周转时间 ==========================
+                // 记录周转时间
                 total_turnaround_time += turnaround_time;
                 completed_customers++;
-                // ====================================================================
 
                 free(c);
                 escalator->steps[MAX_ESCALATOR_CAPACITY-1] = NULL;
@@ -312,10 +310,9 @@ void operate_escalator() {
                 int turnaround_time = mall->current_time - c->arrival_time;
                 printf("顾客 %d 完成乘梯(下行)，周转时间: %d 秒\n", c->id, turnaround_time);
 
-                // ========================== 新增：统计周转时间 ==========================
+                // 记录周转时间
                 total_turnaround_time += turnaround_time;
                 completed_customers++;
-                // ====================================================================
 
                 free(c);
                 escalator->steps[0] = NULL;
@@ -355,11 +352,10 @@ void operate_escalator() {
 
 // 主控制循环
 void mall_control_loop(int simulation_time) {
-    // 只修改以下逻辑：100秒后不允许新创建顾客，但要等所有顾客送走再结束
-    int generation_end_time = mall->current_time + simulation_time; // 比如 100 秒
-    int max_generation_time = mall->current_time + 300; // 原始生成时间限制保留，但实际只用来打印提示
+    // simulation_time 一般传入 100，用于控制“至少运行 100 秒”。
+    int generation_end_time = mall->current_time + simulation_time; // 比如 0 + 100 = 100
+    int max_generation_time = mall->current_time + 300;  // 原逻辑中的 300 秒限制
     
-    // 改成无限循环，靠条件判断退出
     while (1) {
         printf("\n========== 时间: %d 秒 ==========\n", mall->current_time);
         
@@ -402,16 +398,14 @@ void mall_control_loop(int simulation_time) {
         // 打印电梯状态（顾客上电梯后）
         print_escalator_status();
         
-        // 3. 随机生成新顾客：只在“当前时间 < generation_end_time”时生成
+        // 3. 随机生成新顾客（只在当前时间 < generation_end_time 时才允许）
         if (mall->current_time < generation_end_time) {
-            // 原逻辑：最多在300秒内生成顾客，这里仅额外判断是否过了100秒
             if (mall->current_time < max_generation_time) {
                 int max_new_customers = MAX_CUSTOMERS - mall->total_customers;
                 if (max_new_customers > 0) {
                     int new_customers = (rand() % (max_new_customers + 21)) - 20;
                     if (new_customers > 0) {
                         printf("生成 %d 个新顾客\n", new_customers);
-                        
                         for (int i = 0; i < new_customers; i++) {
                             int id = mall->total_customers + 1;
                             int direction = (rand() % 2 == 0) ? UP : DOWN;
@@ -435,41 +429,40 @@ void mall_control_loop(int simulation_time) {
                 printf("已达最大顾客生成时间（300秒），停止生成新顾客\n");
             }
         } else {
-            // 超过 100 秒
+            // 已经 >= 100秒，不再生成新顾客
             printf("已超过 %d 秒，不再生成新顾客\n", simulation_time);
         }
         
         // 4. 时间前进
         mall->current_time++;
         
-        // 5. 输出当前状态统计
+        // 5. 输出当前商场状态
         printf("当前商场状态: 总人数=%d, 上行队列=%d, 下行队列=%d, 电梯上=%d\n",
                mall->total_customers,
                mall->upQueue->length,
                mall->downQueue->length,
                mall->escalator->num_people);
         
-        // 退出条件：如果已经过了生成顾客的时间，并且商场空了，则结束模拟
+        // 6. 判断是否满足“关门”条件：时间 ≥ 100秒 且 当前商场顾客总数 = 0
         if (mall->current_time >= generation_end_time && mall->total_customers == 0) {
-            printf("已过%d秒且商场顾客已全部完成乘梯，模拟结束\n", simulation_time);
+            printf("已达到(或超过)%d秒，且商场顾客已全部完成乘梯，模拟结束\n", simulation_time);
             break;
         }
         
-        // 模拟时间流逝
+        // 每循环一秒，让程序暂停 1 秒模拟
         sleep(1);
     }
     
     printf("\n========== 模拟结束 ==========\n");
     printf("剩余顾客数: %d\n", mall->total_customers);
-
-    // ============ 新增：在模拟结束后打印平均周转时间 ============
+    
+    // 计算并打印平均周转时间
     if (completed_customers > 0) {
         double avg_turnaround = (double)total_turnaround_time / completed_customers;
         printf("所有顾客的平均周转时间: %.2f 秒\n", avg_turnaround);
     } else {
         printf("没有完成乘梯的顾客，无法计算平均周转时间。\n");
     }
-    // ============================================================
 }
 
 // 资源清理函数
@@ -539,7 +532,7 @@ int main(int argc, char* argv[]) {
         }
     }
     
-    // 运行商场控制循环（模拟100秒，但会等顾客全送完才结束）
+    // 运行商场控制循环（至少模拟 100 秒，但会等所有顾客完成后才结束）
     mall_control_loop(100);
     
     // 清理资源
