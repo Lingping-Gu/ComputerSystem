@@ -247,6 +247,23 @@ void board_customer(Customer* customer) {
     }
 }
 
+void print_escalator_status() {
+    Escalator* escalator = mall->escalator;
+    
+    printf("电梯状态: [");
+    for (int i = 0; i < MAX_ESCALATOR_CAPACITY; i++) {
+        if (escalator->steps[i] != NULL) {
+            printf("%d", escalator->steps[i]->id);
+        } else {
+            printf("0");
+        }
+        if (i < MAX_ESCALATOR_CAPACITY-1) printf(", ");
+    }
+    printf("] 方向: %s\n", 
+           (escalator->direction == UP) ? "上行" : 
+           (escalator->direction == DOWN) ? "下行" : "空闲");
+}
+
 // 电梯运行函数
 void operate_escalator() {
     Escalator* escalator = mall->escalator;
