@@ -62,6 +62,7 @@ int should_wait_for_opposite(Queue* opposite_queue);
 int can_customer_board(Customer* customer);
 void board_customer(Customer* customer);
 void operate_escalator();
+void print_escalator_status(); // 添加这一行
 void mall_control_loop(int simulation_time);
 void cleanup_resources();
 
