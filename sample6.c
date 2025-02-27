@@ -222,30 +222,6 @@ int can_customer_board(Customer* c){
 // --------------------------------------------------
 // 顾客正式上电梯
 // --------------------------------------------------
-void board_customer(Customer* c){
-    sem_wait(&escalator_capacity_sem); // 拿令牌
-
-    pthread_mutex_lock(&mall_mutex);
-    Escalator* e = mall->escalator;
-    
-    // 方向已在can_customer_board中设置，不需要在这里设置
-    
-    // 放到入口
-    int entry = (c->direction==UP)? 0 : (MAX_ESCALATOR_CAPACITY-1);
-    e->steps[entry] = c;
-    e->num_people++;
-    current_dir_boarded_count++;
-    int wait_time = mall->current_time - c->arrival_time;
-    printf("顾客 %d 上楼梯，方向: %s，等待=%d秒, 已运送=%d 人\n",
-           c->id, 
-           (c->direction==UP)?"上行":"下行",
-           wait_time, current_dir_boarded_count);
-    pthread_mutex_unlock(&mall_mutex);
-}
-
-// --------------------------------------------------
-// 每秒移动楼梯上的顾客
-// --------------------------------------------------
 void operate_escalator(){
     pthread_mutex_lock(&mall_mutex);
     Escalator* e = mall->escalator;
@@ -311,39 +287,56 @@ void operate_escalator(){
             int downQLen = mall->downQueue->length;
             int diff = upQLen - downQLen;
             
-            // 如果差值超过10人，切换到人数多的方向
-            if(diff > 10){
-                // 上行队列人多10人以上，设为上行
-                if(e->direction != UP){
-                    printf("上行队列比下行多%d人，切换到上行\n", diff);
-                    e->direction = UP;
-                }
-                // 重置计数
+            // 1. 如果两边都没人，设为IDLE
+            if(upQLen == 0 && downQLen == 0){
+                e->direction = IDLE;
+                printf("两边都没人，电梯空闲\n");
+            }
+            // 2. 如果一边没人，另一边有人，切换到有人的那边
+            else if(upQLen == 0 && downQLen > 0){
+                e->direction = DOWN;
+                printf("上行队列为空，切换到下行\n");
                 current_dir_boarded_count = 0;
-            } 
+            }
+            else if(downQLen == 0 && upQLen > 0){
+                e->direction = UP;
+                printf("下行队列为空，切换到上行\n");
+                current_dir_boarded_count = 0;
+            }
+            // 3. 如果差值超过10人，切换到人数多的方向
+            else if(diff > 10){
+                e->direction = UP;
+                printf("上行队列比下行多%d人，切换到上行\n", diff);
+                current_dir_boarded_count = 0;
+            }
             else if(diff < -10){
-                // 下行队列人多10人以上，设为下行
-                if(e->direction != DOWN){
-                    printf("下行队列比上行多%d人，切换到下行\n", -diff);
-                    e->direction = DOWN;
-                }
-                // 重置计数
+                e->direction = DOWN;
+                printf("下行队列比上行多%d人，切换到下行\n", -diff);
                 current_dir_boarded_count = 0;
-            } 
+            }
+            // 4. 如果差值不大（-10到10之间），则检查当前队首顾客能否上电梯
             else {
-                // 如果队列差异不大，则保持原方向或空闲
-                if(upQLen == 0 && downQLen == 0){
-                    e->direction = IDLE;
+                // 检查当前方向队首是否能上电梯
+                Customer* curDirFront = NULL;
+                if(e->direction == UP && upQLen > 0){
+                    curDirFront = mall->upQueue->head;
                 }
-                // 如果原方向已经没有人，但对向有人
-                else if((e->direction == UP && upQLen == 0 && downQLen > 0) ||
-                        (e->direction == DOWN && downQLen == 0 && upQLen > 0)){
-                    e->direction = -e->direction;  // 反向
-                    printf("当前方向队列已空，切换到%s\n", 
-                           (e->direction == UP) ? "上行" : "下行");
-                    current_dir_boarded_count = 0;
+                else if(e->direction == DOWN && downQLen > 0){
+                    curDirFront = mall->downQueue->head;
                 }
-                // 否则保持当前方向
+                
+                // 如果当前方向队首不能上或没有顾客，但对向有人，切换方向
+                if((curDirFront == NULL) || 
+                   (curDirFront != NULL && !can_customer_board(curDirFront))){
+                    // 检查对向是否有人
+                    if((e->direction == UP && downQLen > 0) || 
+                       (e->direction == DOWN && upQLen > 0)){
+                        e->direction = -e->direction;  // 反向
+                        printf("当前方向队首无法上电梯，切换到%s\n", 
+                               (e->direction == UP) ? "上行" : "下行");
+                        current_dir_boarded_count = 0;
+                    }
+                }
             }
         }
     }
