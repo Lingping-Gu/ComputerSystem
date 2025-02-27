@@ -54,7 +54,7 @@ static int total_turnaround_time = 0;
 static int completed_customers   = 0;
 
 // **记录当前方向已送了多少人** 
-// 楼梯空后如果 >=5 且对向有人，就强制切方向
+// 楼梯空后如果队列差值不超过10且已送≥5个人且对向有人，就强制切方向
 static int current_dir_boarded_count = 0;
 
 // 全局ID自增
@@ -71,7 +71,7 @@ Customer* create_customer(int direction);
 void enqueue(Queue* q, Customer* c);
 Customer* dequeue(Queue* q);
 
-int can_customer_board(Customer* c);
+int can_customer_board(Customer* c, int already_locked);
 void board_customer(Customer* c);
 void operate_escalator();
 void print_escalator_status();
@@ -184,9 +184,6 @@ Customer* dequeue(Queue* q){
 // --------------------------------------------------
 // 判断能否让这个顾客进电梯
 // --------------------------------------------------
-// --------------------------------------------------
-// 判断能否让这个顾客进电梯
-// --------------------------------------------------
 int can_customer_board(Customer* c, int already_locked){
     if(!already_locked){
         pthread_mutex_lock(&mall_mutex);
@@ -254,9 +251,12 @@ void board_customer(Customer* c){
 
     pthread_mutex_lock(&mall_mutex);
     Escalator* e = mall->escalator;
-    
-    // 方向已在can_customer_board中设置，不需要在这里设置
-    
+    // 如果电梯是IDLE => 设方向
+    if(e->direction==IDLE){
+        e->direction = c->direction;
+        current_dir_boarded_count=0;
+        printf("电梯方向设为: %s\n", (c->direction==UP)?"上行":"下行");
+    }
     // 放到入口
     int entry = (c->direction==UP)? 0 : (MAX_ESCALATOR_CAPACITY-1);
     e->steps[entry] = c;
@@ -376,24 +376,22 @@ void operate_escalator(){
                     curDirFront = mall->downQueue->head;
                 }
                 
-                // 如果当前方向队首不能上或没有顾客，但对向有人，切换方向
+                // 如果当前方向队首不能上（或已经运送5个人）但对向有人，切换方向
                 if((curDirFront == NULL) || 
-                   (curDirFront != NULL && !can_customer_board(curDirFront))){
-                    // 检查对向是否有人
-                    if((e->direction == UP && downQLen > 0) || 
-                       (e->direction == DOWN && upQLen > 0)){
-                        e->direction = -e->direction;  // 反向
-                        printf("当前方向队首无法上电梯，切换到%s\n", 
-                               (e->direction == UP) ? "上行" : "下行");
-                        current_dir_boarded_count = 0;
-                    }
+                   (current_dir_boarded_count >= 5 && 
+                    ((e->direction == UP && downQLen > 0) || 
+                     (e->direction == DOWN && upQLen > 0)))){
+                    e->direction = -e->direction;  // 反向
+                    printf("当前方向已运送%d人，切换到%s\n", 
+                           current_dir_boarded_count,
+                           (e->direction == UP) ? "上行" : "下行");
+                    current_dir_boarded_count = 0;
                 }
             }
         }
     }
     pthread_mutex_unlock(&mall_mutex);
 }
-
 
 // --------------------------------------------------
 // 打印楼梯状态
@@ -437,7 +435,7 @@ void mall_control_loop(int simulation_time){
             Customer* c = mall->upQueue->head;
             pthread_mutex_unlock(&mall_mutex);
 
-            if(can_customer_board(c)){
+            if(can_customer_board(c, 0)){
                 Customer* top = dequeue(mall->upQueue);
                 board_customer(top);
             } else {
@@ -455,7 +453,7 @@ void mall_control_loop(int simulation_time){
             Customer* c = mall->downQueue->head;
             pthread_mutex_unlock(&mall_mutex);
 
-            if(can_customer_board(c)){
+            if(can_customer_board(c, 0)){
                 Customer* top = dequeue(mall->downQueue);
                 board_customer(top);
             } else {
@@ -495,12 +493,12 @@ void mall_control_loop(int simulation_time){
         }
 
         // 6. 打印商场状态
-        pthread_mutex_lock(&mall_mutex);
         printf("商场状态: 总人数=%d, upQ=%d, downQ=%d, 楼梯上=%d\n",
                mall->total_customers,
                mall->upQueue->length,
                mall->downQueue->length,
                mall->escalator->num_people);
+               
         // 7. 结束条件
         if(mall->current_time>=simulation_time && mall->total_customers==0){
             pthread_mutex_unlock(&mall_mutex);
