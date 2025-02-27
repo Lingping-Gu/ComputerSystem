@@ -249,48 +249,7 @@ void board_customer(Customer* c){
 void operate_escalator(){
     pthread_mutex_lock(&mall_mutex);
     Escalator* e = mall->escalator;
-    // 在operate_escalator()函数中电梯空了的处理部分
-    if(e->num_people==0){
-        printf("楼梯已空.\n");
-        
-        // 计算两个队列的人数差
-        int upQLen = mall->upQueue->length;
-        int downQLen = mall->downQueue->length;
-        int diff = upQLen - downQLen;
-        
-        // 如果差值超过10人，切换到人数多的方向
-        if(abs(diff) > 10){
-            if(diff > 0){
-                // 上行队列人多10人以上，设为上行
-                if(e->direction != UP){
-                    printf("上行队列比下行多%d人，切换到上行\n", diff);
-                    e->direction = UP;
-                }
-            } else {
-                // 下行队列人多10人以上，设为下行
-                if(e->direction != DOWN){
-                    printf("下行队列比上行多%d人，切换到下行\n", -diff);
-                    e->direction = DOWN;
-                }
-            }
-            // 重置计数
-            current_dir_boarded_count = 0;
-        } else {
-            // 如果队列差异不大，则保持原方向或空闲
-            if(upQLen == 0 && downQLen == 0){
-                e->direction = IDLE;
-            }
-            // 如果原方向已经没有人，但对向有人
-            else if((e->direction == UP && upQLen == 0 && downQLen > 0) ||
-                    (e->direction == DOWN && downQLen == 0 && upQLen > 0)){
-                e->direction = -e->direction;  // 反向
-                printf("当前方向队列已空，切换到%s\n", 
-                    (e->direction == UP) ? "上行" : "下行");
-                current_dir_boarded_count = 0;
-            }
-            // 否则保持当前方向
-        }
-    }
+    if(e->num_people>0){
         printf("楼梯方向=%s, 载客=%d\n",
                (e->direction==UP)?"上行":
                (e->direction==DOWN)?"下行":"空闲",
@@ -342,24 +301,50 @@ void operate_escalator(){
                 }
             }
         }
-        // 如果空了 => 检查是否要切到对向
+        
+        // 如果空了 => 检查是否要切换方向
         if(e->num_people==0){
-            printf("楼梯已空. 该方向已运送=%d 人\n", current_dir_boarded_count);
-
-            // 若该方向已送>=5，且对向有人 => 强制切
-            Queue* oppQ = (e->direction==UP)? mall->downQueue: mall->upQueue;
-            int oppLen  = oppQ->length;
-
-            if(current_dir_boarded_count>=5 && oppLen>0){
-                printf("已运送>=5人,对向有人. 强制切到%s\n",
-                       (e->direction==UP)?"下行":"上行");
-                e->direction = - e->direction; // 反向
-            } else {
-                // 否则保持IDLE
-                e->direction = IDLE;
+            printf("楼梯已空.\n");
+            
+            // 计算两个队列的人数差
+            int upQLen = mall->upQueue->length;
+            int downQLen = mall->downQueue->length;
+            int diff = upQLen - downQLen;
+            
+            // 如果差值超过10人，切换到人数多的方向
+            if(diff > 10){
+                // 上行队列人多10人以上，设为上行
+                if(e->direction != UP){
+                    printf("上行队列比下行多%d人，切换到上行\n", diff);
+                    e->direction = UP;
+                }
+                // 重置计数
+                current_dir_boarded_count = 0;
+            } 
+            else if(diff < -10){
+                // 下行队列人多10人以上，设为下行
+                if(e->direction != DOWN){
+                    printf("下行队列比上行多%d人，切换到下行\n", -diff);
+                    e->direction = DOWN;
+                }
+                // 重置计数
+                current_dir_boarded_count = 0;
+            } 
+            else {
+                // 如果队列差异不大，则保持原方向或空闲
+                if(upQLen == 0 && downQLen == 0){
+                    e->direction = IDLE;
+                }
+                // 如果原方向已经没有人，但对向有人
+                else if((e->direction == UP && upQLen == 0 && downQLen > 0) ||
+                        (e->direction == DOWN && downQLen == 0 && upQLen > 0)){
+                    e->direction = -e->direction;  // 反向
+                    printf("当前方向队列已空，切换到%s\n", 
+                           (e->direction == UP) ? "上行" : "下行");
+                    current_dir_boarded_count = 0;
+                }
+                // 否则保持当前方向
             }
-            // 重置计数
-            current_dir_boarded_count=0;
         }
     }
     pthread_mutex_unlock(&mall_mutex);
