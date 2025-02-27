@@ -14,6 +14,7 @@ gcc -o sample2 sample2.c -pthread
 #define MAX_CUSTOMERS 30
 #define MAX_STEPS 13
 #define MAX_CONSECUTIVE 5 // Maximum consecutive customers before switching
+#define TIME_PER_STAIR 100000 // 100000 us
 
 int num_customers, num_steps;
 int current_direction = 0; // 1 for up, -1 for down, 0 for none
@@ -57,7 +58,7 @@ void* customer_thread(void* arg) {
 
     sem_wait(&stairs);
     printf("Customer %d is crossing the stairs in direction %s\n", customer->id, (customer->direction == 1) ? "up" : "down");
-    sleep(1);
+    sleep(num_steps);
     sem_post(&stairs);
     
     pthread_mutex_lock(&mutex);
