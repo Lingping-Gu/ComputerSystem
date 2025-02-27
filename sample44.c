@@ -10,7 +10,7 @@
 #define MAX_CUSTOMERS           30
 #define MAX_ESCALATOR_CAPACITY  13
 
-#define BATCH_LIMIT    2
+#define BATCH_LIMIT    7
 #define DIFF_THRESHOLD 8
 
 #define UP    1
