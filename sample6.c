@@ -222,6 +222,30 @@ int can_customer_board(Customer* c){
 // --------------------------------------------------
 // 顾客正式上电梯
 // --------------------------------------------------
+void board_customer(Customer* c){
+    sem_wait(&escalator_capacity_sem); // 拿令牌
+
+    pthread_mutex_lock(&mall_mutex);
+    Escalator* e = mall->escalator;
+    
+    // 方向已在can_customer_board中设置，不需要在这里设置
+    
+    // 放到入口
+    int entry = (c->direction==UP)? 0 : (MAX_ESCALATOR_CAPACITY-1);
+    e->steps[entry] = c;
+    e->num_people++;
+    current_dir_boarded_count++;
+    int wait_time = mall->current_time - c->arrival_time;
+    printf("顾客 %d 上楼梯，方向: %s，等待=%d秒, 已运送=%d 人\n",
+           c->id, 
+           (c->direction==UP)?"上行":"下行",
+           wait_time, current_dir_boarded_count);
+    pthread_mutex_unlock(&mall_mutex);
+}
+
+// --------------------------------------------------
+// 每秒移动楼梯上的顾客
+// --------------------------------------------------
 void operate_escalator(){
     pthread_mutex_lock(&mall_mutex);
     Escalator* e = mall->escalator;
@@ -342,6 +366,7 @@ void operate_escalator(){
     }
     pthread_mutex_unlock(&mall_mutex);
 }
+
 
 // --------------------------------------------------
 // 打印楼梯状态
