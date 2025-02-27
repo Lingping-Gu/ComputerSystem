@@ -193,36 +193,28 @@ int can_customer_board(Customer* c){
         pthread_mutex_unlock(&mall_mutex);
         return 0;
     }
-    // 如果电梯是空闲(IDLE)或同向(=c->direction)，可以
-    //   但若“已经送>=5个人”且对向有人，就应该等空后再切
-    //   => 这里只是在上人时做阻拦
-    if(e->direction==IDLE || e->direction==c->direction){
-        // 若电梯是同向, 如果 current_dir_boarded_count>=5 && 对向有人 => 拒绝
-        if(e->direction == c->direction && e->direction!=IDLE){
-            Queue* oppQ = (c->direction==UP)? mall->downQueue: mall->upQueue;
-            if(oppQ->length>0 && current_dir_boarded_count>=5){
-                pthread_mutex_unlock(&mall_mutex);
-                return 0; 
-            }
+    
+    // 如果电梯是空闲(IDLE)，可以上，并设置方向
+    if(e->direction == IDLE){
+        e->direction = c->direction;
+        current_dir_boarded_count = 0;
+        pthread_mutex_unlock(&mall_mutex);
+        return 1;
+    }
+    
+    // 如果电梯方向与顾客方向相同，可以上
+    if(e->direction == c->direction){
+        // 同时检查: 如果 current_dir_boarded_count>=5 && 对向有人 => 拒绝
+        Queue* oppQ = (c->direction==UP)? mall->downQueue: mall->upQueue;
+        if(oppQ->length>0 && current_dir_boarded_count>=5){
+            pthread_mutex_unlock(&mall_mutex);
+            return 0; 
         }
         pthread_mutex_unlock(&mall_mutex);
         return 1;
     }
-    // 如果电梯方向相反
-    //   - 要看是否电梯里有人(=>还在跑)
-    //   - 如果有人 => 不让对向上
-    if(e->direction != c->direction){
-        if(e->num_people>0){
-            pthread_mutex_unlock(&mall_mutex);
-            return 0;
-        } else {
-            // 空了 => 切换
-            e->direction = c->direction;
-            current_dir_boarded_count=0; 
-            pthread_mutex_unlock(&mall_mutex);
-            return 1;
-        }
-    }
+    
+    // 如果电梯方向与顾客方向不同，不能上
     pthread_mutex_unlock(&mall_mutex);
     return 0;
 }
@@ -235,12 +227,9 @@ void board_customer(Customer* c){
 
     pthread_mutex_lock(&mall_mutex);
     Escalator* e = mall->escalator;
-    // 如果电梯是IDLE => 设方向
-    if(e->direction==IDLE){
-        e->direction = c->direction;
-        current_dir_boarded_count=0;
-        printf("电梯方向设为: %s\n", (c->direction==UP)?"上行":"下行");
-    }
+    
+    // 方向已在can_customer_board中设置，不需要在这里设置
+    
     // 放到入口
     int entry = (c->direction==UP)? 0 : (MAX_ESCALATOR_CAPACITY-1);
     e->steps[entry] = c;
