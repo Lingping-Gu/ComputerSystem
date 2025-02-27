@@ -1,450 +1,517 @@
 #include <stdio.h>
 #include <stdlib.h>
-#include <time.h>
+#include <pthread.h>
+#include <semaphore.h>
 #include <unistd.h>
+#include <time.h>
 
-// --------------- 可调参数 ---------------
-#define MAX_CUSTOMERS  200   // 商场最多顾客(也可改大)
-#define MAX_STEPS      13    // 楼梯台阶数
-#define BATCH_LIMIT    2     // 同方向连续运送批数上限
-#define DIFF_THRESHOLD 6     // 队列差额阈值
+// -------------------- 常量 --------------------
+#define MAX_CUSTOMERS           30
+#define MAX_ESCALATOR_CAPACITY  13
 
-// --------------- 方向宏 ---------------
-#define UP   1
+#define UP    1
 #define DOWN -1
-#define IDLE 0
+#define IDLE  0
 
-// --------------- 数据结构 ---------------
+// -------------------- 全局互斥锁 + 信号量 --------------------
+static pthread_mutex_t mall_mutex;
+static sem_t escalator_capacity_sem; 
+
+// -------------------- 数据结构 --------------------
 typedef struct Customer {
     int id;
-    int direction;       // UP or DOWN
-    time_t arrival_time; // 记录到达商场时刻
-    // 也可以记录进入楼梯时刻等
+    int arrival_time;  // 到达时间(秒)
+    int direction;     // UP or DOWN
+    int position;      // 0 or 14
     struct Customer* next;
     struct Customer* prev;
 } Customer;
 
-// 简单队列
 typedef struct {
     Customer* head;
     Customer* tail;
     int length;
-    int direction;  // 该队列代表UP或DOWN
+    int direction; // 1=UP, -1=DOWN
 } Queue;
 
-// 楼梯结构
 typedef struct {
-    Customer* steps[MAX_STEPS];  // 13级台阶
-    int direction;               // UP, DOWN, or IDLE
-    int num_people;              // 当前楼梯上有多少人
-} Stair;
+    Customer* steps[MAX_ESCALATOR_CAPACITY]; 
+    int direction; // UP / DOWN / IDLE
+    int num_people; 
+} Escalator;
 
-// 商场(全局环境)
 typedef struct {
     Queue* upQueue;
     Queue* downQueue;
-    Stair* stair;
-    int total_customers;    // 包含楼梯上 + 队列中
+    Escalator* escalator;
+    int total_customers;
     int current_time;
 } Mall;
 
-// --------------- 全局变量 ---------------
-// 用于统计平均周转时间
-static long total_turnaround_time = 0; 
-static int  completed_customers   = 0;
+// -------------------- 全局变量 --------------------
+// 周转时间统计
+static int total_turnaround_time = 0;
+static int completed_customers   = 0;
 
-// 批量计数：记录当前方向已连续完成了多少批(空楼梯一次算1批)
-static int  batch_count = 0;
+// **关键：记录当前方向已经上了多少人**
+// 若>5，则对向新人只能等电梯空后再切换
+static int current_dir_boarded_count = 0;
 
-// --------------- 函数声明 ---------------
+// 递增全局ID
+static int global_customer_id = 0;
+
+Mall* mall = NULL;
+
+// -------------------- 函数声明 --------------------
 Queue* init_queue(int dir);
-Stair* init_stair();
-Mall*  init_mall();
-Customer* create_customer(int id, int direction);
+Escalator* init_escalator();
+Mall* init_mall();
+Customer* create_customer(int direction);
 
 void enqueue(Queue* q, Customer* c);
 Customer* dequeue(Queue* q);
 
-void print_stair_status(Stair* s);
-void operate_stair(Mall* mall);
-void mall_control_loop(Mall* mall, int simulation_time);
+int can_customer_board(Customer* c);
+void board_customer(Customer* c);
+void operate_escalator();
+void print_escalator_status();
+void mall_control_loop(int simulation_time);
+void cleanup_resources();
 
-void cleanup_resources(Mall* mall);
-
-// --------------- 函数定义 ---------------
-
-// 初始化队列
+// --------------------------------------------------
+// 初始化
+// --------------------------------------------------
 Queue* init_queue(int dir) {
+    pthread_mutex_lock(&mall_mutex);
     Queue* q = (Queue*)malloc(sizeof(Queue));
-    if(!q) {
-        perror("Failed to alloc queue");
+    if(!q){
+        perror("malloc queue");
         exit(EXIT_FAILURE);
     }
-    q->head      = NULL;
-    q->tail      = NULL;
-    q->length    = 0;
-    q->direction = dir; // 1=UP, -1=DOWN
+    q->head = NULL;
+    q->tail = NULL;
+    q->length = 0;
+    q->direction = dir; 
+    pthread_mutex_unlock(&mall_mutex);
     return q;
 }
 
-// 初始化楼梯(13级台阶)
-Stair* init_stair() {
-    Stair* s = (Stair*)malloc(sizeof(Stair));
-    if(!s) {
-        perror("Failed to alloc stair");
+Escalator* init_escalator(){
+    pthread_mutex_lock(&mall_mutex);
+    Escalator* e = (Escalator*)malloc(sizeof(Escalator));
+    if(!e){
+        perror("malloc escalator");
         exit(EXIT_FAILURE);
     }
-    for(int i=0; i<MAX_STEPS; i++){
-        s->steps[i] = NULL;
+    for(int i=0; i<MAX_ESCALATOR_CAPACITY; i++){
+        e->steps[i] = NULL;
     }
-    s->direction = IDLE;
-    s->num_people= 0;
-    return s;
+    e->direction = IDLE;
+    e->num_people= 0;
+    pthread_mutex_unlock(&mall_mutex);
+    return e;
 }
 
-// 初始化商场
-Mall* init_mall() {
+Mall* init_mall(){
+    pthread_mutex_lock(&mall_mutex);
     Mall* m = (Mall*)malloc(sizeof(Mall));
     if(!m){
-        perror("Failed to alloc mall");
+        perror("malloc mall");
         exit(EXIT_FAILURE);
     }
     m->upQueue   = init_queue(UP);
     m->downQueue = init_queue(DOWN);
-    m->stair     = init_stair();
-    m->total_customers = 0;
-    m->current_time    = 0;
+    m->escalator = init_escalator();
+    m->total_customers=0;
+    m->current_time=0;
+    pthread_mutex_unlock(&mall_mutex);
     return m;
 }
 
-// 创建顾客
-Customer* create_customer(int id, int direction){
+Customer* create_customer(int direction){
+    pthread_mutex_lock(&mall_mutex);
+    global_customer_id++;
     Customer* c = (Customer*)malloc(sizeof(Customer));
-    if(!c){
-        perror("Failed to alloc customer");
-        exit(EXIT_FAILURE);
-    }
-    c->id            = id;
-    c->direction     = direction;
-    c->arrival_time  = time(NULL);  // 可换成mall->current_time
-    c->next          = NULL;
-    c->prev          = NULL;
+    c->id = global_customer_id;
+    c->arrival_time = mall->current_time;
+    c->direction    = direction;
+    c->position     = (direction==UP)? 0 : 14;
+    c->next = NULL;
+    c->prev = NULL;
+    pthread_mutex_unlock(&mall_mutex);
     return c;
 }
 
-// --------------- 队列操作 ---------------
+// --------------------------------------------------
+// 队列操作
+// --------------------------------------------------
 void enqueue(Queue* q, Customer* c){
+    pthread_mutex_lock(&mall_mutex);
     if(!q->head){
         q->head = c;
         q->tail = c;
     } else {
         q->tail->next = c;
-        c->prev       = q->tail;
-        q->tail       = c;
+        c->prev = q->tail;
+        q->tail = c;
     }
     q->length++;
-    // 可打印：printf("顾客 %d 入队 %s\n", c->id, (q->direction==UP)?"UP":"DOWN");
+    printf("顾客 %d 加入队列，方向: %s，到达时间: %d\n",
+           c->id, (q->direction==UP)?"上行":"下行", c->arrival_time);
+    pthread_mutex_unlock(&mall_mutex);
 }
 
 Customer* dequeue(Queue* q){
+    pthread_mutex_lock(&mall_mutex);
     if(!q->head){
+        pthread_mutex_unlock(&mall_mutex);
         return NULL;
     }
     Customer* c = q->head;
-    q->head = c->next;
+    q->head     = c->next;
     if(!q->head){
         q->tail = NULL;
     } else {
         q->head->prev = NULL;
     }
     q->length--;
+    pthread_mutex_unlock(&mall_mutex);
     return c;
 }
 
-// 打印楼梯状态(调试用)
-void print_stair_status(Stair* s){
-    printf("楼梯 [");
-    for(int i=0; i<MAX_STEPS; i++){
-        if(s->steps[i]) printf("%d", s->steps[i]->id);
-        else printf("0");
-        if(i<MAX_STEPS-1) printf(",");
+// --------------------------------------------------
+// 判断能否让这个顾客进电梯
+// --------------------------------------------------
+int can_customer_board(Customer* c){
+    pthread_mutex_lock(&mall_mutex);
+    Escalator* e = mall->escalator;
+
+    // 如果电梯满,不行
+    if(e->num_people >= MAX_ESCALATOR_CAPACITY){
+        pthread_mutex_unlock(&mall_mutex);
+        return 0;
     }
-    printf("], 方向: %s, 人数=%d\n",
-           (s->direction==UP)?"UP":
-           (s->direction==DOWN)?"DOWN":"IDLE",
-           s->num_people);
+    // 如果电梯是空闲(IDLE)或同向(=c->direction)，可以
+    // 但要看“如果对向来了新人且当前方向已运>5个”，则拒绝
+    if(e->direction == IDLE || e->direction == c->direction){
+        // 这里检查“是否另一侧有新人且我们已运>5”
+        // 我们只在“有顾客想上”时判断:
+        //   if (对向有人 && current_dir_boarded_count>5) => 不让上
+        Queue* opposite = (c->direction==UP)? mall->downQueue: mall->upQueue;
+        int oppositeLen = opposite->length;
+        if(oppositeLen>0 && current_dir_boarded_count>=5 && e->direction==c->direction){
+            // 按你需求: new arrivals wait => 这里就返回0,不让上
+            pthread_mutex_unlock(&mall_mutex);
+            return 0;
+        }
+        // 否则可以上
+        pthread_mutex_unlock(&mall_mutex);
+        return 1;
+    }
+    // 如果电梯方向相反
+    //   - 要看是否电梯里有人(=>还在跑)
+    //   - 如果有人 => 要等空了再切
+    if(e->direction != c->direction){
+        if(e->num_people>0){
+            // 还跑着 => 不让对向上
+            pthread_mutex_unlock(&mall_mutex);
+            return 0;
+        } else {
+            // 如果电梯空了 => 切换方向
+            e->direction = c->direction;
+            current_dir_boarded_count=0; // 重置
+            pthread_mutex_unlock(&mall_mutex);
+            return 1; 
+        }
+    }
+
+    pthread_mutex_unlock(&mall_mutex);
+    return 0;
 }
 
-// --------------- 楼梯每秒的运作 ---------------
-void operate_stair(Mall* mall){
-    Stair* s = mall->stair;
-    if(s->direction == IDLE){
-        // 如果楼梯空闲，就啥也不做(等后面逻辑决定是否进人)
-        return;
+// --------------------------------------------------
+// 顾客正式上电梯
+// --------------------------------------------------
+void board_customer(Customer* c){
+    sem_wait(&escalator_capacity_sem); // 拿令牌
+
+    pthread_mutex_lock(&mall_mutex);
+    Escalator* e = mall->escalator;
+    // 如果电梯是IDLE => 设方向
+    if(e->direction==IDLE){
+        e->direction = c->direction;
+        current_dir_boarded_count=0;
+        printf("电梯方向设为: %s\n", (c->direction==UP)?"上行":"下行");
     }
-    if(s->num_people>0){
-        // 根据方向让最顶/最底的人离开
-        if(s->direction == UP){
-            // 顶部 = steps[12]，如果有人
-            if(s->steps[MAX_STEPS-1]){
-                Customer* c = s->steps[MAX_STEPS-1];
-                // 计算周转时间
-                long t = mall->current_time - c->arrival_time;
-                total_turnaround_time += t;
+    // 放到入口
+    int entry = (c->direction==UP)? 0:(MAX_ESCALATOR_CAPACITY-1);
+    e->steps[entry] = c;
+    e->num_people++;
+    current_dir_boarded_count++;
+    int wait_time = mall->current_time - c->arrival_time;
+    printf("顾客 %d 上楼梯，方向: %s，等待=%d秒, 该方向已运送=%d 人\n",
+           c->id, (c->direction==UP)?"上行":"下行", wait_time, current_dir_boarded_count);
+    pthread_mutex_unlock(&mall_mutex);
+}
+
+// --------------------------------------------------
+// 每秒移动楼梯上的顾客
+// --------------------------------------------------
+void operate_escalator(){
+    pthread_mutex_lock(&mall_mutex);
+    Escalator* e = mall->escalator;
+    if(e->num_people>0){
+        printf("楼梯方向=%s, 当前载客=%d\n",
+               (e->direction==UP)?"上行":
+               (e->direction==DOWN)?"下行":"空闲",
+               e->num_people);
+
+        // 上行
+        if(e->direction==UP){
+            // 顶部离开
+            if(e->steps[MAX_ESCALATOR_CAPACITY-1]){
+                Customer* c = e->steps[MAX_ESCALATOR_CAPACITY-1];
+                int tat = mall->current_time - c->arrival_time;
+                printf("顾客 %d 完成上行,周转=%d秒\n", c->id, tat);
+                total_turnaround_time += tat;
                 completed_customers++;
-                // 打印
-                printf("顾客 %d 完成上行, 周转时间: %ld秒\n", c->id, t);
 
                 free(c);
-                s->steps[MAX_STEPS-1] = NULL;
-                s->num_people--;
+                e->steps[MAX_ESCALATOR_CAPACITY-1] = NULL;
+                e->num_people--;
                 mall->total_customers--;
+                sem_post(&escalator_capacity_sem);
             }
             // 其它人往上挪
-            for(int i=MAX_STEPS-2; i>=0; i--){
-                if(s->steps[i]){
-                    s->steps[i+1] = s->steps[i];
-                    s->steps[i]   = NULL;
-                }
-            }
-            // 底部 steps[0] 如果空 -> 从 upQueue 进1人
-            if(s->steps[0] == NULL){
-                if(mall->upQueue->head){ 
-                    Customer* c = dequeue(mall->upQueue);
-                    s->steps[0] = c;
-                    s->num_people++;
+            for(int i=MAX_ESCALATOR_CAPACITY-2; i>=0; i--){
+                if(e->steps[i]){
+                    e->steps[i+1]=e->steps[i];
+                    e->steps[i]=NULL;
                 }
             }
         }
-        else if(s->direction == DOWN){
-            // 底部=steps[0], 若有人
-            if(s->steps[0]){
-                Customer* c = s->steps[0];
-                long t = mall->current_time - c->arrival_time;
-                total_turnaround_time += t;
+        // 下行
+        else if(e->direction==DOWN){
+            // 底部离开
+            if(e->steps[0]){
+                Customer* c = e->steps[0];
+                int tat = mall->current_time - c->arrival_time;
+                printf("顾客 %d 完成下行,周转=%d秒\n", c->id, tat);
+                total_turnaround_time += tat;
                 completed_customers++;
-                printf("顾客 %d 完成下行, 周转时间: %ld秒\n", c->id, t);
 
                 free(c);
-                s->steps[0] = NULL;
-                s->num_people--;
+                e->steps[0] = NULL;
+                e->num_people--;
                 mall->total_customers--;
+                sem_post(&escalator_capacity_sem);
             }
-            // 其余往下挪
-            for(int i=1; i<MAX_STEPS; i++){
-                if(s->steps[i]){
-                    s->steps[i-1] = s->steps[i];
-                    s->steps[i]   = NULL;
+            // 其它人往下挪
+            for(int i=1; i<MAX_ESCALATOR_CAPACITY; i++){
+                if(e->steps[i]){
+                    e->steps[i-1]=e->steps[i];
+                    e->steps[i]=NULL;
                 }
             }
-            // 顶部 steps[12]若空 -> 从 downQueue 进1人
-            if(s->steps[MAX_STEPS-1] == NULL){
-                if(mall->downQueue->head){
-                    Customer* c = dequeue(mall->downQueue);
-                    s->steps[MAX_STEPS-1] = c;
-                    s->num_people++;
-                }
-            }
+        }
+        // 如果空了 => 重置统计
+        if(e->num_people==0){
+            printf("楼梯已空,可切换方向\n");
+            current_dir_boarded_count=0; 
+            e->direction=IDLE; 
         }
     }
-
-    // 如果楼梯此刻空了 => 完成一批
-    if(s->num_people == 0){
-        batch_count++;
-        printf("楼梯空了，完成一批(batches=%d)\n", batch_count);
-        Queue* upQ   = mall->upQueue;
-        Queue* downQ = mall->downQueue;
-        int upLen   = upQ->length;
-        int downLen = downQ->length;
-
-        // 若两边都没人 => 设IDLE
-        if(upLen==0 && downLen==0){
-            s->direction = IDLE;
-            batch_count=0; 
-            printf("楼梯空闲\n");
-        }
-        else {
-            // 检查是否需要切换
-            if(s->direction == UP){
-                // 1) 若已达BATCH_LIMIT && 下行有人 -> 切
-                if(batch_count>=BATCH_LIMIT && downLen>0){
-                    printf("已达BATCH_LIMIT=%d, 切换到下行\n", BATCH_LIMIT);
-                    s->direction = DOWN;
-                    batch_count=0;
-                }
-                // 2) 若(downLen - upLen >= DIFF_THRESHOLD) -> 切
-                else if(downLen - upLen >= DIFF_THRESHOLD){
-                    printf("下行比上行多 >=%d, 切到下行\n", DIFF_THRESHOLD);
-                    s->direction = DOWN;
-                    batch_count=0;
-                }
-                // 否则保持 UP
-            }
-            else if(s->direction == DOWN){
-                if(batch_count>=BATCH_LIMIT && upLen>0){
-                    printf("已达BATCH_LIMIT=%d, 切换到上行\n", BATCH_LIMIT);
-                    s->direction = UP;
-                    batch_count=0;
-                }
-                else if(upLen - downLen >= DIFF_THRESHOLD){
-                    printf("上行比下行多 >=%d, 切到上行\n", DIFF_THRESHOLD);
-                    s->direction = UP;
-                    batch_count=0;
-                }
-                // 否则保持 DOWN
-            }
-        }
-    }
+    pthread_mutex_unlock(&mall_mutex);
 }
 
-// --------------- 主循环 ---------------
-void mall_control_loop(Mall* mall, int simulation_time){
-    int next_id = 1; // 给新顾客分配ID
-    srand(time(NULL));
+// --------------------------------------------------
+// 打印楼梯状态
+// --------------------------------------------------
+void print_escalator_status(){
+    pthread_mutex_lock(&mall_mutex);
+    Escalator* e = mall->escalator;
+    printf("楼梯状态: [");
+    for(int i=0; i<MAX_ESCALATOR_CAPACITY; i++){
+        if(e->steps[i]) {
+            printf("%d", e->steps[i]->id);
+        } else {
+            printf("0");
+        }
+        if(i<MAX_ESCALATOR_CAPACITY-1) printf(",");
+    }
+    printf("], 方向: %s\n",
+           (e->direction==UP)?"上行":
+           (e->direction==DOWN)?"下行":"空闲");
+    pthread_mutex_unlock(&mall_mutex);
+}
 
+// --------------------------------------------------
+// 主循环
+// --------------------------------------------------
+void mall_control_loop(int simulation_time){
     while(1){
-        printf("\n----- 时间 %d 秒 -----\n", mall->current_time);
+        pthread_mutex_lock(&mall_mutex);
+        printf("\n----- 时间: %d 秒 -----\n", mall->current_time);
+        pthread_mutex_unlock(&mall_mutex);
 
-        // 1. 楼梯每秒运作
-        operate_stair(mall);
+        // 1. 运行楼梯
+        operate_escalator();
 
-        // 2. 打印楼梯状态(可注释掉以减少输出)
-        // print_stair_status(mall->stair);
+        // 2. 打印状态
+        print_escalator_status();
 
-        // 3. 若楼梯方向是 IDLE，则尝试决定一个方向(若队列有人)
-        //    (这能保证楼梯空闲时也会启用某方向)
-        if(mall->stair->direction == IDLE){
-            int upLen   = mall->upQueue->length;
-            int downLen = mall->downQueue->length;
-            if(upLen>0 && downLen==0){
-                mall->stair->direction = UP;
-                printf("楼梯方向设为 UP(只有上行有人)\n");
+        // 3. 让上行队首上楼梯(若能)
+        pthread_mutex_lock(&mall_mutex);
+        if(mall->upQueue->head){
+            Customer* c = mall->upQueue->head;
+            pthread_mutex_unlock(&mall_mutex);
+
+            if(can_customer_board(c)){
+                Customer* top = dequeue(mall->upQueue);
+                board_customer(top);
+            } else {
+                pthread_mutex_lock(&mall_mutex);
+                printf("上行顾客 %d 暂时不能上楼梯\n", c->id);
+                pthread_mutex_unlock(&mall_mutex);
             }
-            else if(downLen>0 && upLen==0){
-                mall->stair->direction = DOWN;
-                printf("楼梯方向设为 DOWN(只有下行有人)\n");
-            }
-            else if(upLen>0 && downLen>0){
-                // 可以任选一方或做个比较:
-                if(upLen>=downLen){
-                    mall->stair->direction = UP;
-                    printf("楼梯方向设为 UP(上行人数较多or相等)\n");
-                } else {
-                    mall->stair->direction = DOWN;
-                    printf("楼梯方向设为 DOWN(下行人数较多)\n");
-                }
-            }
+        } else {
+            pthread_mutex_unlock(&mall_mutex);
         }
 
-        // 4. 若当前时间 < simulation_time，则可能随机生成顾客
-        if(mall->current_time < simulation_time){
-            // 随机生成 0~2 人
-            int new_cust = rand()%3;
+        // 4. 让下行队首上楼梯(若能)
+        pthread_mutex_lock(&mall_mutex);
+        if(mall->downQueue->head){
+            Customer* c = mall->downQueue->head;
+            pthread_mutex_unlock(&mall_mutex);
+
+            if(can_customer_board(c)){
+                Customer* top = dequeue(mall->downQueue);
+                board_customer(top);
+            } else {
+                pthread_mutex_lock(&mall_mutex);
+                printf("下行顾客 %d 暂时不能上楼梯\n", c->id);
+                pthread_mutex_unlock(&mall_mutex);
+            }
+        } else {
+            pthread_mutex_unlock(&mall_mutex);
+        }
+
+        // 5. 生成新顾客(若<100秒)
+        pthread_mutex_lock(&mall_mutex);
+        if(mall->current_time<simulation_time){
+            int new_cust=rand()%3; // 0~2
             if(new_cust>0){
-                printf("本秒生成 %d 个新顾客\n", new_cust);
+                printf("本秒新来 %d 个顾客\n", new_cust);
                 for(int i=0; i<new_cust; i++){
-                    // 若商场未满
-                    if(mall->total_customers < MAX_CUSTOMERS){
-                        int dir = (rand()%2==0)? UP:DOWN;
-                        Customer* c = create_customer(next_id++, dir);
-                        mall->total_customers++;
-                        if(dir==UP)   enqueue(mall->upQueue, c);
-                        else          enqueue(mall->downQueue, c);
+                    if(mall->total_customers>=MAX_CUSTOMERS){
+                        printf("商场满,不接待新顾客\n");
+                        break;
                     }
-                    else{
-                        printf("商场已满，不再接收新顾客\n");
-                    }
+                    int dir=(rand()%2==0)?UP:DOWN;
+                    Customer* nc = create_customer(dir);
+                    mall->total_customers++;
+                    if(dir==UP) enqueue(mall->upQueue,nc);
+                    else        enqueue(mall->downQueue,nc);
                 }
             } else {
-                printf("本秒没有新顾客到达\n");
+                printf("本秒没有新顾客\n");
             }
-        }
-        else {
-            printf("已达或超过 %d 秒，不再生成新顾客\n", simulation_time);
+        } else {
+            printf(">= %d秒,不再生成新顾客\n", simulation_time);
         }
 
-        // 5. 打印商场状态
+        // 6. 打印商场状态
         printf("商场状态: 总人数=%d, upQ=%d, downQ=%d, 楼梯上=%d\n",
                mall->total_customers,
                mall->upQueue->length,
                mall->downQueue->length,
-               mall->stair->num_people);
+               mall->escalator->num_people);
 
-        // 6. 结束条件：若当前时间>=100 且 total_customers==0
-        if(mall->current_time >= simulation_time && mall->total_customers==0){
-            printf("超%d秒且顾客清空，模拟结束\n", simulation_time);
+        // 7. 结束条件
+        if(mall->current_time>=simulation_time && mall->total_customers==0){
+            pthread_mutex_unlock(&mall_mutex);
             break;
         }
-
-        // 每秒推进
         mall->current_time++;
+        pthread_mutex_unlock(&mall_mutex);
         sleep(1);
     }
 
-    // 最终打印平均周转时间
+    printf("\n===== 模拟结束 =====\n");
+    pthread_mutex_lock(&mall_mutex);
+    printf("剩余顾客数: %d\n", mall->total_customers);
     if(completed_customers>0){
-        double avg_turn = (double)total_turnaround_time/completed_customers;
-        printf("\n所有顾客平均周转时间: %.2f 秒\n", avg_turn);
+        double avg = (double)total_turnaround_time / completed_customers;
+        printf("平均周转时间=%.2f秒\n", avg);
     } else {
-        printf("\n没有任何顾客完成乘梯?\n");
+        printf("无完成乘梯顾客?\n");
     }
+    pthread_mutex_unlock(&mall_mutex);
 }
 
-// --------------- 清理资源 ---------------
-void cleanup_resources(Mall* mall){
-    // 队列
-    Customer* tmp;
-    while( (tmp=dequeue(mall->upQueue))!=NULL ) {
-        free(tmp);
-    }
-    while( (tmp=dequeue(mall->downQueue))!=NULL ) {
-        free(tmp);
-    }
-    // 楼梯上
-    for(int i=0; i<MAX_STEPS; i++){
-        if(mall->stair->steps[i]){
-            free(mall->stair->steps[i]);
+// --------------------------------------------------
+// cleanup
+// --------------------------------------------------
+void cleanup_resources(){
+    pthread_mutex_lock(&mall_mutex);
+    Customer* c;
+    while( (c=dequeue(mall->upQueue))!=NULL ) free(c);
+    while( (c=dequeue(mall->downQueue))!=NULL ) free(c);
+
+    // 楼梯上残余
+    for(int i=0; i<MAX_ESCALATOR_CAPACITY; i++){
+        if(mall->escalator->steps[i]){
+            free(mall->escalator->steps[i]);
         }
     }
     free(mall->upQueue);
     free(mall->downQueue);
-    free(mall->stair);
+    free(mall->escalator);
     free(mall);
+
+    pthread_mutex_unlock(&mall_mutex);
 }
 
-// --------------- main函数 ---------------
 int main(int argc, char* argv[]){
-    // 命令行: ./escalator_batch <initial_customers> <num_steps>
-    // 例如: ./escalator_batch 10 13
-    // 在本示例中, num_steps暂时不影响楼梯大小(固定13), 仅是你想传的参数
-    int init_customers = 10;
-    int steps = 13;
-
-    if(argc>1){
-        init_customers = atoi(argv[1]);
-    }
-    if(argc>2){
-        steps = atoi(argv[2]);
-    }
-
-    printf("开始模拟: 初始顾客数=%d, 楼梯台阶(固定13)=%d\n", init_customers, steps);
-
-    // 初始化商场
-    Mall* mall = init_mall();
-
-    // 随机方向给初始顾客
     srand(time(NULL));
-    for(int i=0; i<init_customers; i++){
-        int dir = (rand()%2==0)? UP:DOWN;
-        Customer* c = create_customer(i+1, dir);
-        mall->total_customers++;
-        if(dir==UP)   enqueue(mall->upQueue, c);
-        else          enqueue(mall->downQueue, c);
+
+    // 初始化递归互斥锁
+    pthread_mutexattr_t attr;
+    pthread_mutexattr_init(&attr);
+    pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+    pthread_mutex_init(&mall_mutex, &attr);
+    pthread_mutexattr_destroy(&attr);
+
+    // 信号量
+    sem_init(&escalator_capacity_sem, 0, MAX_ESCALATOR_CAPACITY);
+
+    // 解析命令行
+    int init_customers=10;
+    if(argc>1){
+        init_customers=atoi(argv[1]);
+        if(init_customers<0||init_customers>MAX_CUSTOMERS){
+            printf("初始顾客数[0..%d]\n",MAX_CUSTOMERS);
+            return 1;
+        }
     }
 
-    // 至少模拟100秒,之后等清空
-    mall_control_loop(mall, 100);
+    mall=init_mall();
 
-    cleanup_resources(mall);
+    // 创建初始顾客
+    for(int i=0; i<init_customers; i++){
+        int dir=(rand()%2==0)?UP:DOWN;
+        Customer* c = create_customer(dir);
+        mall->total_customers++;
+        if(dir==UP) enqueue(mall->upQueue,c);
+        else        enqueue(mall->downQueue,c);
+    }
+
+    // 进主循环
+    mall_control_loop(100);
+
+    cleanup_resources();
+    sem_destroy(&escalator_capacity_sem);
+    pthread_mutex_destroy(&mall_mutex);
+
     return 0;
 }
