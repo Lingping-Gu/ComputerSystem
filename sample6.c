@@ -185,7 +185,9 @@ Customer* dequeue(Queue* q){
 // 判断能否让这个顾客进电梯
 // --------------------------------------------------
 int can_customer_board(Customer* c){
-    pthread_mutex_lock(&mall_mutex);
+    if(!already_locked){
+        pthread_mutex_lock(&mall_mutex);
+    }
     Escalator* e = mall->escalator;
 
     // 如果电梯满,不行
@@ -214,9 +216,10 @@ int can_customer_board(Customer* c){
         return 1;
     }
     
-    // 如果电梯方向与顾客方向不同，不能上
-    pthread_mutex_unlock(&mall_mutex);
-    return 0;
+    if(!already_locked){
+        pthread_mutex_unlock(&mall_mutex);
+    }
+    return result;  // 返回结果
 }
 
 // --------------------------------------------------
