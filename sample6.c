@@ -184,42 +184,66 @@ Customer* dequeue(Queue* q){
 // --------------------------------------------------
 // 判断能否让这个顾客进电梯
 // --------------------------------------------------
-int can_customer_board(Customer* c){
+// --------------------------------------------------
+// 判断能否让这个顾客进电梯
+// --------------------------------------------------
+int can_customer_board(Customer* c, int already_locked){
     if(!already_locked){
         pthread_mutex_lock(&mall_mutex);
     }
+    
     Escalator* e = mall->escalator;
+    int result = 0;  // 默认不能上电梯
 
     // 如果电梯满,不行
     if(e->num_people >= MAX_ESCALATOR_CAPACITY){
-        pthread_mutex_unlock(&mall_mutex);
+        if(!already_locked){
+            pthread_mutex_unlock(&mall_mutex);
+        }
         return 0;
     }
     
     // 如果电梯是空闲(IDLE)，可以上，并设置方向
     if(e->direction == IDLE){
-        e->direction = c->direction;
-        current_dir_boarded_count = 0;
-        pthread_mutex_unlock(&mall_mutex);
-        return 1;
+        result = 1;
     }
-    
     // 如果电梯方向与顾客方向相同，可以上
-    if(e->direction == c->direction){
-        // 同时检查: 如果 current_dir_boarded_count>=5 && 对向有人 => 拒绝
+    else if(e->direction == c->direction){
+        // 检查上下行队列差值
         Queue* oppQ = (c->direction==UP)? mall->downQueue: mall->upQueue;
-        if(oppQ->length>0 && current_dir_boarded_count>=5){
-            pthread_mutex_unlock(&mall_mutex);
-            return 0; 
+        int upQLen = mall->upQueue->length;
+        int downQLen = mall->downQueue->length;
+        int diff = abs(upQLen - downQLen);
+        
+        // 仅当对向有人且差值不超过10时，考虑限制
+        if(oppQ->length > 0 && diff <= 10){
+            // 如果已运送超过5人，不再接受此方向
+            if(current_dir_boarded_count >= 5){
+                result = 0;
+            } else {
+                result = 1;
+            }
+        } else {
+            result = 1;  // 其他情况可以上
         }
-        pthread_mutex_unlock(&mall_mutex);
-        return 1;
+    }
+    // 如果电梯方向与顾客方向不同，不能上
+    else {
+        // 如果电梯是空的，可以改变方向
+        if(e->num_people == 0){
+            // 电梯为空时，设置新的方向
+            e->direction = c->direction;
+            current_dir_boarded_count = 0;
+            result = 1;
+        } else {
+            result = 0;  // 电梯有人且方向相反，不能上
+        }
     }
     
     if(!already_locked){
         pthread_mutex_unlock(&mall_mutex);
     }
-    return result;  // 返回结果
+    return result;
 }
 
 // --------------------------------------------------
