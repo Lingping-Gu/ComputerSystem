@@ -50,13 +50,16 @@ Each customer is represented as a thread that moves either **up** or **down** th
 
 ## 4. Testing and Validation
 
+
 ### Test Cases:
 
-1. **Basic Functionality**: Runs the simulation with a small number of customers to ensure proper movement.
-2. **Deadlock Prevention**: Tests scenarios where customers would naturally cause deadlock without proper handling.
-3. **Starvation Prevention**: Ensures fair access to the escalator for both directions.
-4. **High Load**: Tests the program with maximum customers and stairs to check performance.
-5. **Randomized Arrival**: Runs multiple iterations with randomized customer arrivals.
+1. **Basic Functionality**: Run the mall simulation for **100 seconds** to test the normal flow of customers entering and exiting.
+2. **Entry Restriction**: After **100 seconds**, no new customers are allowed to enter, but the simulation waits until all **30 customers inside have exited** to ensure proper termination.
+3. **Randomized Customer Generation**: Customers are generated at a random rate of **0-3 per second**, testing load and customer flow dynamics.
+4. **High Load**: Higher traffic was tested, but due to the mall's **maximum capacity of 30 people**, increased load had minimal impact, ensuring the mall does not exceed its limit.
+5. **Deadlock and Starvation Prevention**: Validate that under high traffic, the system continues to function smoothly, avoiding deadlock or unfair waiting times.
+6. **Performance Optimization**: Observe the mall's efficiency under **various customer flow rates**, optimizing the entry and exit rules.
+
 
 ### Deadlock Handling
 Deadlock is prevented using a combination of **mutex locks and semaphores** to ensure exclusive access to shared resources. The escalator capacity is controlled via a semaphore, ensuring that no more than the allowed number of customers are on the escalator at any time. Additionally, a **mutex lock** is used to synchronize queue operations and prevent race conditions when customers attempt to board or leave the escalator. These mechanisms enforce orderly movement and eliminate circular waits, a key cause of deadlock.
