@@ -2,8 +2,8 @@
 
 ## 1. Group Information
 
-- **Group Number**: [Your Group Number]
-- **Members**: [List the names of the students in your group]
+- **Group Number**: 3
+- **Members**: Irene Cai, Lingping Gu, Yilu Xu
 
 ## 2. Project Description
 
