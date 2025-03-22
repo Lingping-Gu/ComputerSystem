@@ -1,7 +1,7 @@
 CC = gcc
 CFLAGS = -pthread -Wall -Wextra -O2
 TARGET = project2
-SRC = sample7.c
+SRC = sample8.c
 
 all: $(TARGET)
 
